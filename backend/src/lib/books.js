@@ -390,15 +390,42 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
   console.log('[DB] No Supabase credentials — using in-memory demo catalogue');
 }
 
+export function setSupabaseClient(client) {
+  supabase = client;
+}
+
+export function getSupabaseClient() {
+  return supabase;
+}
+
 export async function listBooks({ q = '', category = '', sort = 'featured', page = 1, limit = 50 } = {}) {
   let books = demoBooks.filter(b => b.is_active !== false);
 
   if (supabase) {
-    const { data, error } = await supabase.from('books')
-      .select('id,title,author,category,price,old_price,rating,review_count,cover_url,description,stock,featured,isbn')
-      .eq('is_active', true);
-    if (error) throw new Error('Could not load books from database');
-    books = data ?? [];
+    try {
+      const { data, error } = await supabase
+        .from('books')
+        .select('*')
+        .eq('is_active', true);
+
+      if (error) {
+        // Safely log the exact Supabase error code, message, details, and hint without exposing credentials
+        console.error('[DB Error] Could not load books from Supabase:', {
+          code: error.code || 'UNKNOWN',
+          message: error.message || 'Unknown database error',
+          details: error.details || null,
+          hint: error.hint || null,
+        });
+        console.warn('[DB Fallback] Serving in-memory 22-book demo catalogue due to database error');
+      } else if (Array.isArray(data) && data.length > 0) {
+        books = data;
+      } else {
+        console.warn('[DB Empty] Supabase returned 0 books; serving in-memory 22-book demo catalogue');
+      }
+    } catch (err) {
+      console.error('[DB Exception] Unexpected error communicating with Supabase:', err.message || err);
+      console.warn('[DB Fallback] Serving in-memory 22-book demo catalogue');
+    }
   }
 
   const query = q.trim().toLowerCase();
