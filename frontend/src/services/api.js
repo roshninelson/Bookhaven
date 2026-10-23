@@ -1,4 +1,19 @@
-const BASE = import.meta.env.VITE_API_BASE_URL || '/api';
+function resolveBaseUrl() {
+  const envUrl = (
+    import.meta.env.VITE_API_URL ||
+    import.meta.env.VITE_API_BASE_URL ||
+    (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')
+      ? 'https://bookhaven-oqfj.onrender.com/api'
+      : '/api')
+  ).trim();
+
+  const clean = envUrl.replace(/\/+$/, '');
+  if (!clean) return '/api';
+  if (clean.startsWith('/')) return clean;
+  return clean.endsWith('/api') ? clean : `${clean}/api`;
+}
+
+const BASE = resolveBaseUrl();
 
 function getToken() {
   try { return sessionStorage.getItem('bh_token'); } catch { return null; }

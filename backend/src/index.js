@@ -22,12 +22,26 @@ app.disable('x-powered-by');
 app.use(helmet());
 
 /* ── CORS ────────────────────────────────────────────────────────────── */
-const origins = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173')
-  .split(',').map(s => s.trim());
+const configuredOrigins = (process.env.FRONTEND_ORIGIN || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://bookhaven-cyan.vercel.app',
+  ...configuredOrigins,
+]);
 
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || origins.includes(origin)) return callback(null, true);
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.has(origin)) return callback(null, true);
+    // Allow any Vercel deployment preview or production domain
+    if (/^https:\/\/[a-z0-9-]+(\.vercel\.app)$/i.test(origin)) {
+      return callback(null, true);
+    }
     return callback(new Error('Origin not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
