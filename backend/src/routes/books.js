@@ -63,10 +63,10 @@ router.get('/:id', optionalAuth, async (req, res, next) => {
     }
     const enrichedBook = { ...book, rating: dynamicRating, review_count: dynamicReviewCount };
 
-    const reviews = activeReviews.map(r => {
-      const u = store.findUserById(r.user_id);
+    const reviews = await Promise.all(activeReviews.map(async r => {
+      const u = await store.findUserById(r.user_id);
       return { ...r, user_name: u?.display_name || 'Reader', is_verified_purchase: true };
-    });
+    }));
 
     res.json({ data: enrichedBook, related, reviews });
   } catch (err) { next(err); }

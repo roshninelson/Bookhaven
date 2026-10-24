@@ -103,9 +103,9 @@ async function seedAdmin() {
   ];
 
   for (const email of adminEmails) {
-    if (!store.findUserByEmail(email)) {
+    if (!await store.findUserByEmail(email)) {
       const password_hash = await hashPassword(adminPass);
-      store.createUser({
+      await store.createUser({
         email,
         password_hash,
         display_name: 'BookHaven Admin',
@@ -116,9 +116,9 @@ async function seedAdmin() {
   }
 
   // Seed demo reader
-  if (!store.findUserByEmail('reader@bookhaven.dev')) {
+  if (!await store.findUserByEmail('reader@bookhaven.dev')) {
     const password_hash = await hashPassword('reader123');
-    store.createUser({
+    await store.createUser({
       email: 'reader@bookhaven.dev',
       password_hash,
       display_name: 'Elena Vance',

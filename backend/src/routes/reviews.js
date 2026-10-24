@@ -64,15 +64,15 @@ router.get('/:bookId', optionalAuth, async (req, res) => {
     // Exclude rejected or pending reviews from public calculation
     const activeReviews = rawReviews.filter(r => r.status !== 'rejected' && r.status !== 'pending');
 
-    const mapped = activeReviews.map(r => {
-      const u = store.findUserById(r.user_id);
+    const mapped = await Promise.all(activeReviews.map(async r => {
+      const u = await store.findUserById(r.user_id);
       return {
         ...r,
         user_name: u?.display_name || 'Reader',
         is_own: req.user?.id === r.user_id,
         is_verified_purchase: true,
       };
-    });
+    }));
 
     const totalReviews = mapped.length;
     const averageRating = totalReviews > 0

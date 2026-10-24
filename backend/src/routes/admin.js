@@ -9,7 +9,7 @@ router.use(authenticate, requireAdmin);
 /* ── Dashboard Stats ────────────────────────────────────────────────── */
 router.get('/stats', async (req, res) => {
   try {
-    const stats = store.getStats();
+    const stats = await store.getStats();
     const allBooks = await listBooks();
     const lowStock = allBooks.filter(b => b.stock <= 5);
     res.json({ data: { ...stats, totalBooks: allBooks.length, lowStockBooks: lowStock } });
@@ -114,8 +114,9 @@ router.put('/orders/:id', (req, res) => {
 });
 
 /* ── User Management ────────────────────────────────────────────────── */
-router.get('/users', (req, res) => {
-  res.json({ data: store.getAllUsers() });
+router.get('/users', async (req, res) => {
+  const users = await store.getAllUsers();
+  res.json({ data: users });
 });
 
 /* ── Review Moderation ──────────────────────────────────────────────── */

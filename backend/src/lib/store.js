@@ -1,14 +1,15 @@
 import { randomUUID } from 'crypto';
+import { getSupabase } from './supabase.js';
 
-/* ── In-memory data store for development without Supabase ──────────────
-   All data resets when the server restarts.
-   When SUPABASE_URL + SUPABASE_ANON_KEY are set, the books route already
-   reads from Supabase. The store below handles auth, cart, wishlist,
-   orders, reviews, coupons, reading-lists, and audit logs in-memory so
-   the full application can run without any external service.
+/* ── Persistent & in-memory data store ──────────────────────────────────
+   When SUPABASE_URL + (SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY) are set,
+   user accounts are stored persistently in Supabase PostgreSQL (public.users)
+   with read-through/write-through in-memory caching.
+   If Supabase is unavailable, missing, or encounters errors, the store safely
+   falls back to the in-memory cache so the bookstore remains operational.
    ──────────────────────────────────────────────────────────────────── */
 
-const users = [];
+let users = [];
 const carts = new Map();
 const wishlists = new Map();
 const orders = [];
@@ -25,34 +26,240 @@ const recentlyViewed = new Map();
 const auditLogs = [];
 
 export const store = {
-  /* ── Users ─────────────────────────────────────────────────────────── */
-  findUserByEmail(email) {
-    return users.find(u => u.email === email.toLowerCase());
+  /* ── Users (Supabase PostgreSQL + In-Memory Fallback) ─────────────────── */
+  async findUserByEmail(email) {
+    if (!email) return null;
+    const normalized = String(email).toLowerCase().trim();
+
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, email, password_hash, display_name, role, created_at, updated_at')
+          .ilike('email', normalized)
+          .maybeSingle();
+
+        if (!error && data) {
+          const user = {
+            id: data.id,
+            email: data.email.toLowerCase(),
+            password_hash: data.password_hash,
+            display_name: data.display_name,
+            role: data.role,
+            created_at: data.created_at,
+            updated_at: data.updated_at,
+          };
+          const idx = users.findIndex(u => u.id === user.id || u.email === user.email);
+          if (idx >= 0) users[idx] = user;
+          else users.push(user);
+          return user;
+        }
+      } catch (err) {
+        console.warn('[DB] Supabase findUserByEmail error:', err.message);
+      }
+    }
+    return users.find(u => u.email === normalized) || null;
   },
-  findUserById(id) {
-    return users.find(u => u.id === id);
+
+  async findUserById(id) {
+    if (!id) return null;
+    const cached = users.find(u => u.id === id);
+    if (cached) return cached;
+
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, email, password_hash, display_name, role, created_at, updated_at')
+          .eq('id', id)
+          .maybeSingle();
+
+        if (!error && data) {
+          const user = {
+            id: data.id,
+            email: data.email.toLowerCase(),
+            password_hash: data.password_hash,
+            display_name: data.display_name,
+            role: data.role,
+            created_at: data.created_at,
+            updated_at: data.updated_at,
+          };
+          const idx = users.findIndex(u => u.id === user.id);
+          if (idx >= 0) users[idx] = user;
+          else users.push(user);
+          return user;
+        }
+      } catch (err) {
+        console.warn('[DB] Supabase findUserById error:', err.message);
+      }
+    }
+    return null;
   },
-  createUser({ email, password_hash, display_name, role = 'customer' }) {
-    const user = {
-      id: randomUUID(), email: email.toLowerCase(), password_hash,
-      display_name, role, created_at: new Date().toISOString(),
+
+  async createUser({ email, password_hash, display_name, role = 'customer' }) {
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const newUser = {
+      id: randomUUID(),
+      email: normalizedEmail,
+      password_hash,
+      display_name: display_name || normalizedEmail.split('@')[0],
+      role,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
-    users.push(user);
-    this.addAuditLog('user_registered', { userId: user.id, email: user.email });
-    return user;
+
+    const supabase = getSupabase();
+    if (supabase) {
+      let insertResult;
+      try {
+        insertResult = await supabase
+          .from('users')
+          .insert({
+            id: newUser.id,
+            email: newUser.email,
+            password_hash: newUser.password_hash,
+            display_name: newUser.display_name,
+            role: newUser.role,
+            created_at: newUser.created_at,
+            updated_at: newUser.updated_at,
+          })
+          .select('id, email, password_hash, display_name, role, created_at, updated_at')
+          .single();
+      } catch (err) {
+        console.error('[DB Persist Error] Unexpected exception during Supabase user insert:', err.message);
+        const dbErr = new Error('Database persistence failed. Account could not be created.');
+        dbErr.statusCode = 503;
+        throw dbErr;
+      }
+
+      const { data, error } = insertResult || {};
+      if (error) {
+        if (error.code === '23505') {
+          console.warn('[DB Persist Conflict] User registration email already exists (code: 23505)');
+          const conflictErr = new Error('Email already registered');
+          conflictErr.statusCode = 409;
+          throw conflictErr;
+        }
+        console.error('[DB Persist Error] Supabase user insert failed:', {
+          code: error.code || 'UNKNOWN',
+          message: error.message || 'Database error',
+        });
+        const dbErr = new Error('Database persistence failed. Account could not be created.');
+        dbErr.statusCode = 503;
+        throw dbErr;
+      }
+
+      if (data) {
+        console.log(`[DB Persist Success] User ${data.id} successfully written to Supabase public.users (role: ${data.role})`);
+        newUser.id = data.id;
+        newUser.created_at = data.created_at || newUser.created_at;
+        newUser.updated_at = data.updated_at || newUser.updated_at;
+      }
+    } else {
+      console.log(`[DB Store Notice] Storing user ${newUser.id} in in-memory store (no Supabase client configured)`);
+    }
+
+    const idx = users.findIndex(u => u.id === newUser.id || u.email === newUser.email);
+    if (idx >= 0) users[idx] = newUser;
+    else users.push(newUser);
+
+    this.addAuditLog('user_registered', { userId: newUser.id, email: newUser.email });
+    return newUser;
   },
-  updateUser(id, updates) {
+
+  async updateUser(id, updates) {
+    const updatedAt = new Date().toISOString();
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const dbUpdates = { ...updates, updated_at: updatedAt };
+        delete dbUpdates.id;
+        const { data, error } = await supabase
+          .from('users')
+          .update(dbUpdates)
+          .eq('id', id)
+          .select('id, email, password_hash, display_name, role, created_at, updated_at')
+          .maybeSingle();
+
+        if (!error && data) {
+          const user = {
+            id: data.id,
+            email: data.email.toLowerCase(),
+            password_hash: data.password_hash,
+            display_name: data.display_name,
+            role: data.role,
+            created_at: data.created_at,
+            updated_at: data.updated_at,
+          };
+          const idx = users.findIndex(u => u.id === user.id);
+          if (idx >= 0) users[idx] = user;
+          else users.push(user);
+          return user;
+        }
+      } catch (err) {
+        console.warn('[DB] Supabase updateUser error:', err.message);
+      }
+    }
+
     const u = users.find(u => u.id === id);
-    if (u) Object.assign(u, updates, { updated_at: new Date().toISOString() });
-    return u;
+    if (u) Object.assign(u, updates, { updated_at: updatedAt });
+    return u || null;
   },
-  getAllUsers() {
+
+  async getAllUsers() {
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, email, display_name, role, created_at, updated_at')
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          for (const row of data) {
+            const existing = users.find(u => u.id === row.id);
+            if (!existing) {
+              users.push({
+                id: row.id,
+                email: row.email.toLowerCase(),
+                password_hash: '',
+                display_name: row.display_name,
+                role: row.role,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+              });
+            }
+          }
+          return data.map(u => ({
+            id: u.id,
+            email: u.email,
+            display_name: u.display_name,
+            role: u.role,
+            created_at: u.created_at,
+          }));
+        }
+      } catch (err) {
+        console.warn('[DB] Supabase getAllUsers error:', err.message);
+      }
+    }
+
     return users.map(u => ({
       id: u.id, email: u.email, display_name: u.display_name,
       role: u.role, created_at: u.created_at,
     }));
   },
+
   userCount() { return users.length; },
+
+  /* ── Test Helpers ──────────────────────────────────────────────────── */
+  _clearUsersCacheForTesting() {
+    users = [];
+  },
+  _setUsersCacheForTesting(mockUsers = []) {
+    users = [...mockUsers];
+  },
 
   /* ── Cart ──────────────────────────────────────────────────────────── */
   getCart(userId) { return carts.get(userId) || []; },
@@ -398,12 +605,24 @@ export const store = {
   },
 
   /* ── Stats ─────────────────────────────────────────────────────────── */
-  getStats() {
+  async getStats() {
     const now = new Date();
     const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
     const recentOrders = orders.filter(o => new Date(o.created_at) >= thirtyDaysAgo);
+    let totalUsersCount = users.length;
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { count, error } = await supabase
+          .from('users')
+          .select('*', { count: 'exact', head: true });
+        if (!error && typeof count === 'number') {
+          totalUsersCount = count;
+        }
+      } catch {}
+    }
     return {
-      totalUsers: users.length,
+      totalUsers: totalUsersCount,
       totalOrders: orders.length,
       totalRevenue: orders.reduce((s, o) => s + (o.total || 0), 0),
       totalReviews: reviews.length,

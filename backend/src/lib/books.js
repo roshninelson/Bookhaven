@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { getSupabase, setSupabase } from './supabase.js';
 
 export const demoBooks = [
   // ── Original 8 Books ────────────────────────────────────────────────────────
@@ -382,25 +382,18 @@ export const categories = [
   'Travel/Adventure',
 ];
 
-let supabase;
-if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
-  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, { auth: { persistSession: false } });
-  console.log('[DB] Supabase client initialized');
-} else {
-  console.log('[DB] No Supabase credentials — using in-memory demo catalogue');
-}
-
 export function setSupabaseClient(client) {
-  supabase = client;
+  setSupabase(client);
 }
 
 export function getSupabaseClient() {
-  return supabase;
+  return getSupabase();
 }
 
 export async function listBooks({ q = '', category = '', sort = 'featured', page = 1, limit = 50 } = {}) {
   let books = demoBooks.filter(b => b.is_active !== false);
 
+  const supabase = getSupabase();
   if (supabase) {
     try {
       const { data, error } = await supabase

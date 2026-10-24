@@ -15,10 +15,10 @@ router.post('/register', async (req, res) => {
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
     if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Invalid email format' });
     if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    if (store.findUserByEmail(email)) return res.status(409).json({ error: 'Email already registered' });
+    if (await store.findUserByEmail(email)) return res.status(409).json({ error: 'Email already registered' });
 
     const password_hash = await hashPassword(password);
-    const user = store.createUser({ email, password_hash, display_name: display_name || email.split('@')[0] });
+    const user = await store.createUser({ email, password_hash, display_name: display_name || email.split('@')[0] });
     const token = generateToken(user);
 
     res.status(201).json({
@@ -26,8 +26,12 @@ router.post('/register', async (req, res) => {
       token,
     });
   } catch (err) {
-    console.error('Register error:', err.message);
-    res.status(500).json({ error: 'Registration failed' });
+    if (err.statusCode === 409 || err.message === 'Email already registered') {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+    console.error('[Auth Error] Registration error:', err.message);
+    const status = err.statusCode || 500;
+    res.status(status).json({ error: err.message || 'Registration failed' });
   }
 });
 
@@ -37,7 +41,7 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
 
-    const user = store.findUserByEmail(email);
+    const user = await store.findUserByEmail(email);
     if (!user) return res.status(401).json({ error: 'Invalid email or password' });
 
     const valid = await comparePassword(password, user.password_hash);
@@ -62,12 +66,12 @@ router.get('/me', authenticate, (req, res) => {
 });
 
 /* PUT /api/auth/profile – update display name */
-router.put('/profile', authenticate, (req, res) => {
+router.put('/profile', authenticate, async (req, res) => {
   const { display_name } = req.body || {};
   if (!display_name || display_name.trim().length < 1) {
     return res.status(400).json({ error: 'Display name is required' });
   }
-  store.updateUser(req.user.id, { display_name: display_name.trim() });
+  await store.updateUser(req.user.id, { display_name: display_name.trim() });
   res.json({ data: { ...req.user, display_name: display_name.trim() } });
 });
 
